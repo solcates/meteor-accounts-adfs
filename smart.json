@@ -1,0 +1,10 @@
+{
+    "name": "accounts-adfs",
+    "description": "ADFS login support for Meteor",
+    "homepage": "https://github.com/solcates/meteor-accounts-adfs",
+    "author": "Sol Cates",
+    "version": "0.0.1",
+    "git": "https://github.com/solcates/meteor-accounts-adfs.git",
+    "packages": {
+    }
+}
