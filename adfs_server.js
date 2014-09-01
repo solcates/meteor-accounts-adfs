@@ -2,9 +2,14 @@ if (!Accounts.adfs) {
     Accounts.adfs = {};
 }
 
+var xmlbuilder = Npm.require('xmlbuilder')
 var Fiber = Npm.require('fibers');
 var connect = Npm.require('connect');
 RoutePolicy.declare('/_adfs/', 'network');
+
+service = _.find(Meteor.settings.adfs, function(adfsSetting) {
+    return adfsSetting.provider === adfsObject.serviceName;
+});
 
 Accounts.registerLoginHandler(function(loginRequest) {
     if (!loginRequest.adfs || !loginRequest.credentialToken) {
@@ -65,6 +70,7 @@ middleware = function(req, res, next) {
     // the runner
     try {
         var adfsObject = adfsUrlToObject(req.url);
+
         if (!adfsObject || !adfsObject.serviceName) {
             next();
             return;
@@ -109,6 +115,11 @@ middleware = function(req, res, next) {
 
                 closePopup(res);
             });
+        } else if (adfsObject.actionName === "metadata") {
+            var cert = service.cert
+            var t = generateServiceProviderMetadata(cert, req, res, next)
+            res.write(t)
+            res.end()
         } else {
             throw new Error("Unexpected ADFS action " + adfsObject.actionName);
         }
@@ -145,4 +156,78 @@ var closePopup = function(res, err) {
     if (err)
         content = '<html><body><h2>Sorry, an error occured</h2><div>' + err + '</div><a onclick="window.close();">Close Window</a></body></html>';
     res.end(content, 'utf-8');
+};
+
+
+var generateServiceProviderMetadata = function(decryptionCert, req, res, next) {
+    var keyDescriptor = null;
+    var adfsObject = adfsUrlToObject(req.url);
+    var service = _.find(Meteor.settings.adfs, function(adfsSetting) {
+        return adfsSetting.provider === adfsObject.serviceName;
+    });
+    if (service.decryptionPvk) {
+        if (!decryptionCert) {
+            throw new Error(
+                "Missing decryptionCert while generating metadata for decrypting service provider");
+        }
+
+        decryptionCert = decryptionCert.replace(/-+BEGIN CERTIFICATE-+\r?\n?/, '');
+        decryptionCert = decryptionCert.replace(/-+END CERTIFICATE-+\r?\n?/, '');
+
+        keyDescriptor = {
+            'ds:KeyInfo': {
+                'ds:X509Data': {
+                    'ds:X509Certificate': {
+                        '#text': decryptionCert
+                    }
+                }
+            },
+            '#list': [
+                // this should be the set that the xmlenc library supports
+                {
+                    'EncryptionMethod': {
+                        '@Algorithm': 'http://www.w3.org/2001/04/xmlenc#aes256-cbc'
+                    }
+                }, {
+                    'EncryptionMethod': {
+                        '@Algorithm': 'http://www.w3.org/2001/04/xmlenc#aes128-cbc'
+                    }
+                }, {
+                    'EncryptionMethod': {
+                        '@Algorithm': 'http://www.w3.org/2001/04/xmlenc#tripledes-cbc'
+                    }
+                },
+            ]
+        };
+    }
+
+    if (!service.callbackUrl) {
+        throw new Error(
+            "Unable to generate service provider metadata when callbackUrl option is not set");
+    }
+
+    var metadata = {
+        'EntityDescriptor': {
+            '@xmlns': 'urn:oasis:names:tc:SAML:2.0:metadata',
+            '@xmlns:ds': 'http://www.w3.org/2000/09/xmldsig#',
+            '@entityID': !service.issuer,
+            'SPSSODescriptor': {
+                '@protocolSupportEnumeration': 'urn:oasis:names:tc:SAML:2.0:protocol',
+                'KeyDescriptor': keyDescriptor,
+                'NameIDFormat': "Name ID",
+                'AssertionConsumerService': {
+                    '@index': '1',
+                    '@isDefault': 'true',
+                    '@Binding': 'urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST',
+                    '@Location': service.callbackUrl
+                }
+            },
+        }
+    };
+
+    return xmlbuilder.create(metadata).end({
+        pretty: true,
+        indent: '  ',
+        newline: '\n'
+    });
 };
